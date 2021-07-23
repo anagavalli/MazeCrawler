@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Maze Crawler</title>
+
+    <!-- Bootstrap -->
+    <link href="css/bootstrap.min.css" rel="stylesheet">
+    <link href="css/cs4620.css" rel="stylesheet">
+    <link href="css/jquery-ui.min.css" rel="stylesheet">
+    <link href="css/jquery-ui.theme.min.css" rel="stylesheet">
+    <link href="css/jquery-ui.structure.min.css" rel="stylesheet">
+
+    <!-- HTML5 shim and Respond.js for IE8 support of HTML5 elements and media queries -->
+    <!-- WARNING: Respond.js doesn't work if you view the page via file:// -->
+    <!--[if lt IE 9]>
+    <script src="https://oss.maxcdn.com/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+    <![endif]-->
+</head>
+<body>
+<div class="container">
+    <h1>Maze Crawler</h1>
+
+    <div align="center">
+        <canvas tabindex="1" id="webglCanvas" style="border: none; background-color: black;" width="800" height="600"></canvas>
+    </div>
+
+    <table class="table table-bordered">
+        <tr>
+            <td align="right"><b>Field of view:</b></td>
+            <td>
+                <input type="text" id="fovSpinner" value="45.0">
+            </td>
+        </tr>
+        <tr>
+            <td align="right"><b>Eye height:</b></td>
+            <td>
+                <input type="text" id="eyeHeightSpinner" value="0.5">
+            </td>
+        </tr>
+        <tr>
+            <td align="right"><b>Maze:</b></td>
+            <td>
+            
+                <table>
+                    <tr>
+                        <td><textarea style="font-family: monospace" id="mazeTextArea" cols="25" rows="10">
+#######
+#....##
+#..#.##
+#....##
+#....##
+#....##
+#N....#
+#######
+</textarea></td><td><pre id="minimap"></pre></td>
+                    </tr>
+                </table>
+
+                <br>
+                <button id="updateMazeButton">Update Maze</button>
+            </td>
+        </tr>
+    </table>
+</div>
+
+<!-- jQuery (necessary for Bootstrap's JavaScript plugins) -->
+<script src="js/jquery-3.1.1.min.js"></script>
+<script src="js/jquery-ui.min.js"></script>
+<script src="js/gl-matrix-min.js"></script>
+<script src="js/preloadjs-0.6.2.min.js"></script>
+
+
+<script>
+    $("#fovSpinner").spinner({
+        min: 10.0,
+        max: 80.0,
+        step: 0.1
+    });
+    $("#eyeHeightSpinner").spinner({
+        min: 0.1,
+        max: 1.0,
+        step:0.01
+    });
+
+    function getFov() {
+        return $("#fovSpinner").spinner("value") * Math.PI / 180.0;
+    }
+
+    function getEyeHeight() {
+        return $("#eyeHeightSpinner").spinner("value");
+    }
+
+    function getMazeStrings() {
+        return $("#mazeTextArea").val().trim().split(/\s/);
+    }
+
+    function createMazeFromStrings(strings) {
+        var sizeY = strings.length;
+        var sizeX = strings[0].length;
+
+        var x, y;
+        for(y=0;y<sizeY;y++) {
+            if (strings[y].length != sizeX) {
+                throw new Error("Mesh is not a rectangle!");
+            }
+        }
+
+        var data = [];
+        for (x = 0; x < sizeX; x++) {
+            var a = [];
+            for (y = 0; y < sizeY; y++) {
+                a.push(null);
+            }
+            data.push(a);
+        }
+
+        var startPosition = null;
+        var startHeading = null;
+        for (x = 0; x < sizeX; x++) {
+            for (y = 0; y < sizeY; y++) {
+                var c = strings[sizeY - y - 1][x];
+                if (c == "#") {
+                    data[x][y] = 1;
+                } else {
+                    data[x][y] = 0;
+                }
+
+                if (c == "N" || c == "E" || c == "W" || c == "S") {
+                    if (startPosition == null) {
+                        if (c == "N") {
+                            startHeadingDir = 1
+                            startHeading = Math.PI / 2;
+                        } else if (c == "E") {
+                            startHeadingDir = 0
+                            startHeading = 0.0;
+                        } else if (c == "W") {
+                            startHeadingDir = 3
+                            startHeading = Math.PI;
+                        } else if (c == "S") {
+                            startHeadingDir = 4
+                            startHeading = 3 * Math.PI / 2;
+                        }
+                        startPosition = [x, y];
+                    } else {
+                        throw new Error("There are more than one starting point!");
+                    }
+                }
+            }
+        }
+
+        if (startPosition == null) {
+            throw new Error("There is no starting point!");
+        }
+
+        for(x=0;x<sizeX;x++) {
+            if (data[x][0] != 1) {
+                throw new Error("Boundary is not complete!");
+            }
+            if (data[x][sizeY-1] != 1) {
+                throw new Error("Boundary is not complete!");
+            }
+        }
+        for(y=0;y<sizeY;y++) {
+            if (data[0][y] != 1) {
+                throw new Error("Boundary is not complete!");
+            }
+            if (data[sizeX-1][y] != 1) {
+                throw new Error("Boundary is not complete!");
+            }
+        }
+
+        return {
+            sizeX,
+            sizeY,
+            data,
+            startHeading,
+            startHeadingDir,
+            startPosition
+        };
+    }
+
+    function createSkyBox(){
+        var sky = [];
+
+        for (var i=-maze.sizeX; i<2*maze.sizeX; i++){
+            sky.push([]);
+            for (var j=-maze.sizeY; j<2*maze.sizeY; j++){
+                var skyXF = mat4.create();
+                mat4.translate(skyXF, skyXF, vec3.fromValues(-3*i,0,3*j));
+                sky[i+maze.sizeX].push(skyXF);
+            }
+        }
+
+        return sky;
+
+    }
+
+    function createGlMaze(){
+        var width = maze.sizeX;
+        var length = maze.sizeY;
+
+        var room = [];
+
+        for (var i=0; i<width; i++){
+            room.push([]);
+            for (var j=0; j<length; j++){
+                // east, north, west, south, floor
+                room[i].push([null, null, null, null, null]);
+
+                try{
+                    if (maze.data[i][j] == 1 && maze.data[i][j+1] == 0) {
+                        // north
+                        var transform = mat4.create();
+                        mat4.translate(transform, transform, vec3.fromValues(-i,0,j+1));
+                        room[i][j][0] = transform;
+                    }
+                } catch (e){
+                    // TODO throw error again if not typeerror
+                }
+
+                try {
+                    if (maze.data[i][j] == 1 && maze.data[i][j-1] == 0){
+                        // south
+                        var transform = mat4.create();
+                        mat4.translate(transform, transform, vec3.fromValues(-i,0,j));
+                        room[i][j][2] = transform;
+                    }
+                } catch (e){
+                }
+
+                try {
+                    if (maze.data[i][j] == 1 && maze.data[i+1][j] == 0){
+                        // east
+                        var transform = mat4.create();
+                        mat4.translate(transform, transform, vec3.fromValues(-i,0,j));
+                        mat4.rotate(transform, transform, radians(-90), Y_AXIS);
+
+                        room[i][j][1] = transform;
+                    }
+                } catch (e){
+                }
+
+                try {
+                    if (maze.data[i][j] == 1 && maze.data[i-1][j] == 0){
+                        // west
+                        var transform = mat4.create();
+                        mat4.translate(transform, transform, vec3.fromValues(-i+1,0,j));
+                        mat4.rotate(transform, transform, radians(-90), Y_AXIS);
+
+                        room[i][j][3] = transform;
+                    } 
+                } catch (e){
+                }
+
+                var floorXF = mat4.create();
+                mat4.translate(floorXF, floorXF, vec3.fromValues(-i,0,j));
+                room[i][j][4] = floorXF;
+            }
+        }
+
+        return room;
+    }
+
+    const print_world = (maze, state) => {
+
+        let lines = new Array(maze.data[0].length).fill('')
+
+        for (var x = 0; x < maze.data.length; x++) {
+            for (var y = 0; y < maze.data[x].length; y++) {
+                if (maze.data[x][y] === 1) lines[y] += "#"
+                else if (state.x === x && state.y === y) lines[y] += ['>','^','<','v'][state.d]
+                else lines[y] += "."
+            };
+        };
+
+        $("#minimap").text(lines.reverse().join('\n'))
+    }
+
+    let maze = null, state = null;
+    var room = null;
+    var sky = null;
+    function updateMaze() {
+        maze = createMazeFromStrings(getMazeStrings());
+
+        state =  {
+            x : maze.startPosition[0],
+            y : maze.startPosition[1],
+            d : maze.startHeadingDir,   // The direction we're facing
+        }
+
+        room = createGlMaze();
+        sky = createSkyBox();
+
+        print_world(maze, state)
+    }
+    updateMaze();
+    $("#updateMazeButton").click(updateMaze);
+
+
+    /******************************* Walking *******************************/
+
+    const EAST = 0, NORTH = 1, WEST = 2, SOUTH = 3
+          RIGHT = -1, LEFT = 1,
+          FORWARD = 1, BACKWARD = -1
+
+    const move = function (dir) {
+
+        let x = state.x + (
+            state.d === EAST ? (1 * dir):
+            state.d === WEST ? (-1 * dir): 0)
+        
+        let y = state.y + (
+            state.d === NORTH ? (1 * dir): 
+            state.d === SOUTH ? (-1 * dir): 0)
+
+        // Unwalkable tile
+        if (maze.data[x][y] === 1) return
+
+        // Walkable! Update the state
+        else {
+            anim.left = ANIM_DURATION
+            Object.assign(anim.last_state, state)
+            Object.assign(state, {x, y})
+        }
+    }
+
+    const turn = function (dir) {
+        let d = (((state.d + dir) % 4) + 4) % 4 // js mod is weird
+        anim.left = ANIM_DURATION
+        Object.assign(anim.last_state, state)
+        Object.assign(state, {d})
+
+    }
+
+    $("#webglCanvas").keydown(function (event) {
+
+        // animating. do nothing
+        if (anim.left !== 0) return;
+
+        switch (event.key) {
+            case "w":
+            case "ArrowUp": move(FORWARD); break
+
+            case "s":
+            case "ArrowDown": move(BACKWARD); break
+
+            case "a":
+            case "ArrowLeft": turn(LEFT); break
+
+            case "d":
+            case "ArrowRight": turn(RIGHT); break
+        }
+        event.preventDefault()
+        print_world(maze, state)
+
+    });
+
+</script>
+
+<script id="vertexShader" type="x-shader/x-vertex">
+
+    attribute vec3 position;
+    // attribute float depth;
+    uniform mat4 toWorld;
+    // varying vec3 color;
+    attribute vec2 vert_texCoord;
+
+    varying vec2 geom_texCoord;
+    
+    void main() {
+        geom_texCoord = vert_texCoord;
+        gl_Position = toWorld * vec4(position, 1.0);
+    }
+
+</script>
+
+<script id="fragmentShader" type="x-shader/x-fragment">
+
+    precision highp float;
+    // uniform vec3 color;
+    uniform sampler2D texture;
+    varying vec2 geom_texCoord;
+    
+    void main() {
+        // gl_FragColor = vec4(color, 0.0);
+        gl_FragColor = texture2D(texture, geom_texCoord);
+    }
+
+</script>
+
+<script src="js/shaders.js"></script>
+
+</body>
+</html>
